@@ -3,6 +3,7 @@ library(fpp3)
 library(ggplot2)
 library(readxl)
 library(feasts)
+library(tseries)
 
 # DADOS
 
@@ -53,6 +54,37 @@ taxa_diff |> ACF(taxa_d, lag_max = 36) |> autoplot() + theme_minimal()
 # PACF
 taxa_diff |> PACF(taxa_d, lag_max = 36) |> autoplot() + theme_minimal()
 
+# TESTE - ESTACIONARIEDADE
+
+# Converter para ts base (necessário para os testes)
+taxa_vec <- as.numeric(dados_ts$taxa)
+taxa_ts_base <- ts(taxa_vec, frequency = 12)
+
+# --- Série original ---
+cat("=== SÉRIE ORIGINAL ===\n")
+adf.test(taxa_ts_base)
+kpss.test(taxa_ts_base)
+
+# ADF -> rejeita H0 -> série é estacionária
+# KPSS -> Não rejeita H0 -> série é estacionária
+# d = 0
+
+
+# --- Após diferenciação sazonal (D=1) ---
+taxa_d12 <- diff(taxa_ts_base, lag = 12)
+cat("\n=== APÓS DIFF SAZONAL (lag=12) ===\n")
+adf.test(taxa_d12)
+kpss.test(taxa_d12)
+
+# ADF -> rejeita H0 -> série é estacionária
+# KPSS -> Não rejeita H0 -> série é estacionária
+# D = 0
+
+# --- Após diferenciação sazonal + não sazonal (D=1, d=1) ---
+taxa_d12_d1 <- diff(taxa_d12, differences = 1)
+cat("\n=== APÓS DIFF SAZONAL + NÃO SAZONAL ===\n")
+adf.test(taxa_d12_d1)
+kpss.test(taxa_d12_d1)
 
 
 # MODELOS - ETS
@@ -75,7 +107,7 @@ pneumo_fc_ets <- forecast(pneumo_fit_ets, h = 12)
 pneumo_fc_ets |>
   filter(.model == "ets_auto") |>
   autoplot(dados_ts, level = NULL) +
-  labs(title = "Taxa de Pneumonia em Idosos - Previsão 2025",
+  labs(title = "Taxa chikungunya - Previsão 2025",
        y = "Taxa")
 
 
@@ -92,6 +124,58 @@ augment(pneumo_fit_ets) |>
 
 # MODELOS - ARIMA
 
+# ARIMA (p, d, q) (P, D, Q)[s]
+
+# minúsculas (p,d,q) → capturam padrões nos lags “normais” (1, 2, 3...) não sazonal
+# maiúsculas (P,D,Q) → capturam padrões nos lags múltiplos de 12 (12, 24, 36...) sazonal
+
+# acf -> 1,2 e 12 (mais forte) - q = 2 e Q = 1
+# pacf -> 1,2 e 12 (mais forte) - p = 2 e P = 1
+#  ARIMA(2,0,2)(1,1,1)[12]
+
+
+dados_treino <- dados_ts |>
+  filter(year(`Mês/ano`) < 2025)
+
+pneumo_fit_arima <- dados_treino |>
+  model(
+    auto_arima   = ARIMA(taxa ~ pdq(0:3, 0:1, 0:3) + PDQ(0:2, 0:1, 0:2),
+                         stepwise = F,
+                         approximation = F),
+    arima202111  = ARIMA(taxa ~ pdq(2,0,2) + PDQ(1,1,1)),
+    arima212111  = ARIMA(taxa ~ pdq(2,1,2) + PDQ(1,1,1)),
+    arima202101  = ARIMA(taxa ~ pdq(2,0,2) + PDQ(1,0,1))
+  )
+
+# Ver os modelos escolhidos
+pneumo_fit_arima |> pivot_longer(everything(), names_to = "Model name",
+                                 values_to = "Orders")
+
+# Comparar AICc
+glance(pneumo_fit_arima) |> arrange(AICc) |> select(.model:BIC)
+
+# Resíduos do melhor modelo
+pneumo_fit_arima |> select(auto_arima) |> gg_tsresiduals(lag = 36)
+
+
+# Teste Ljung-Box (dof = p+q+P+Q do modelo escolhido)
+augment(pneumo_fit_arima) |>
+  filter(.model == "auto_arima") |>
+  features(.innov, ljung_box, lag = 24, dof = 6)
+
+# resíudos são ruído branco
+
+# Previsão 2025
+forecast(pneumo_fit_arima, h = 12) |>
+  filter(.model == "auto_arima") |>
+  autoplot(dados_ts, level = NULL) +
+  labs(title = "Taxa Chikungunya - Previsão 2025",
+       y = "Taxa")
+
+
+# Melhorias para o modelo (opções):
+# incluir uma variável dummy
+# transformações (log, suavizar o pico de 2024...?)
 
 
 
@@ -115,20 +199,7 @@ augment(pneumo_fit_ets) |>
 
 
 
-
-
-
-
-
-
-
-
-
-# codigo antigo que estou olhando
-
-
-
-
+# codigo antigo que estou olhando - rascunho:
 
 
 
