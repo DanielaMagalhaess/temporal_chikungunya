@@ -4,6 +4,7 @@ library(ggplot2)
 library(readxl)
 library(feasts)
 library(tseries)
+library(zoo)
 
 # DADOS
 
@@ -163,7 +164,7 @@ augment(pneumo_fit_arima) |>
   filter(.model == "auto_arima") |>
   features(.innov, ljung_box, lag = 24, dof = 6)
 
-# resíudos são ruído branco
+# resíduos são ruído branco
 
 # Previsão 2025
 forecast(pneumo_fit_arima, h = 12) |>
@@ -178,20 +179,150 @@ forecast(pneumo_fit_arima, h = 12) |>
 # transformações (log, suavizar o pico de 2024...?)
 
 
+# TESTE: variável dummy 2024
+
+dados_ts <- dados_ts |>
+  mutate(
+    surto_2024 = if_else(year(`Mês/ano`) == 2024, 1, 0)
+  )
+
+# 2. Separar treino já com as dummies
+dados_treino <- dados_ts |>
+  filter(year(`Mês/ano`) < 2025)
+
+# 3. Criar matrix de regressores futuros (2025)
+dados_2025 <- dados_ts |>
+  filter(year(`Mês/ano`) == 2025)
+
+# 4. Ajustar modelo com dummies como regressores externos
+pneumo_fit_arima <- dados_treino |>
+  model(
+    auto_arima = ARIMA(taxa ~ surto_2024 +
+                         pdq(0:3, 0:1, 0:3) + PDQ(0:2, 0:1, 0:2),
+                       stepwise = F,
+                       approximation = F),
+    arima_dummy = ARIMA(taxa ~surto_2024 +
+                          pdq(2,0,2) + PDQ(1,1,1))
+  )
+
+# 5. Comparar AICc
+glance(pneumo_fit_arima) |> arrange(AICc) |> select(.model:BIC)
+
+# Resíduos do melhor modelo
+pneumo_fit_arima |> select(auto_arima) |> gg_tsresiduals(lag = 36)
+
+
+# Teste Ljung-Box (dof = p+q+P+Q do modelo escolhido)
+augment(pneumo_fit_arima) |>
+  filter(.model == "auto_arima") |>
+  features(.innov, ljung_box, lag = 24, dof = 6)
+
+# 6. Previsão — passando os regressores de 2025 (ambos = 0)
+forecast(pneumo_fit_arima, new_data = dados_2025) |>
+  filter(.model == "auto_arima") |>
+  autoplot(dados_ts, level = NULL) +
+  labs(title = "Taxa Chikungunya - Previsão 2025 (com dummies de surto)",
+       y = "Taxa")
 
 
 
+# TESTE: suavizando o pico de 2024 - médias mensais dos ultimos anos
+
+
+dados_ts <- dados_ts |>
+  as_tibble() |>
+  mutate(
+    # média móvel centrada de 12 meses (6 antes + 6 depois)
+    taxa_mm = rollmean(taxa, k = 12, fill = NA, align = "center"),
+    taxa_adj = if_else(
+      year(`Mês/ano`) == 2024 & month(`Mês/ano`) %in% c(1,2,3,4,5),
+      taxa_mm,
+      taxa
+    )
+  ) |>
+  select(-taxa_mm) |>
+  as_tsibble(index = `Mês/ano`)
+
+# 2. Separar treino já com as dummies
+dados_treino <- dados_ts |>
+  filter(year(`Mês/ano`) < 2025)
+
+pneumo_fit_arima <- dados_treino |>
+  model(
+    auto_arima   = ARIMA(taxa_adj ~ pdq(0:3, 0:1, 0:3) + PDQ(0:2, 0:1, 0:2),
+                         stepwise = F,
+                         approximation = F),
+    arima202111  = ARIMA(taxa_adj ~ pdq(2,0,2) + PDQ(1,1,1)),
+    arima212111  = ARIMA(taxa_adj ~ pdq(2,1,2) + PDQ(1,1,1)),
+    arima202101  = ARIMA(taxa_adj ~ pdq(2,0,2) + PDQ(1,0,1))
+  )
+
+# Ver os modelos escolhidos
+pneumo_fit_arima |> pivot_longer(everything(), names_to = "Model name",
+                                 values_to = "Orders")
+
+# Comparar AICc
+glance(pneumo_fit_arima) |> arrange(AICc) |> select(.model:BIC)
+
+# Resíduos do melhor modelo
+pneumo_fit_arima |> select(auto_arima) |> gg_tsresiduals(lag = 36)
+
+
+# Teste Ljung-Box (dof = p+q+P+Q do modelo escolhido)
+augment(pneumo_fit_arima) |>
+  filter(.model == "auto_arima") |>
+  features(.innov, ljung_box, lag = 24, dof = 6)
+
+# resíduos são ruído branco
+
+# Previsão 2025
+forecast(pneumo_fit_arima, h = 12) |>
+  filter(.model == "auto_arima") |>
+  autoplot(dados_ts, level = NULL) +
+  labs(title = "Taxa Chikungunya - Previsão 2025",
+       y = "Taxa")
 
 
 
+# TESTE: prevendo 2024 e 2025
+
+dados_treino <- dados_ts |>
+  filter(year(`Mês/ano`) < 2024)
+
+pneumo_fit_arima <- dados_treino |>
+  model(
+    auto_arima   = ARIMA(taxa ~ pdq(0:3, 0:1, 0:3) + PDQ(0:2, 0:1, 0:2),
+                         stepwise = F,
+                         approximation = F),
+    arima202111  = ARIMA(taxa ~ pdq(2,0,2) + PDQ(1,1,1)),
+    arima212111  = ARIMA(taxa ~ pdq(2,1,2) + PDQ(1,1,1)),
+    arima202101  = ARIMA(taxa ~ pdq(2,0,2) + PDQ(1,0,1))
+  )
+
+# Ver os modelos escolhidos
+pneumo_fit_arima |> pivot_longer(everything(), names_to = "Model name",
+                                 values_to = "Orders")
+
+# Comparar AICc
+glance(pneumo_fit_arima) |> arrange(AICc) |> select(.model:BIC)
+
+# Resíduos do melhor modelo
+pneumo_fit_arima |> select(auto_arima) |> gg_tsresiduals(lag = 36)
 
 
+# Teste Ljung-Box (dof = p+q+P+Q do modelo escolhido)
+augment(pneumo_fit_arima) |>
+  filter(.model == "auto_arima") |>
+  features(.innov, ljung_box, lag = 24, dof = 6)
 
+# resíduos são ruído branco
 
-
-
-
-
+# Previsão 2025
+forecast(pneumo_fit_arima, h = 24) |>
+  filter(.model == "auto_arima") |>
+  autoplot(dados_ts, level = NULL) +
+  labs(title = "Taxa Chikungunya - Previsão 2024+2025",
+       y = "Taxa")
 
 
 
